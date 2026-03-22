@@ -6,3 +6,5 @@
 *-save.kicad_sch
 fp-info-cache
 *.kicad_prl
+*_autosave-*
+

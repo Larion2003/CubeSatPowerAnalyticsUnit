@@ -3213,8 +3213,8 @@
 		(at 119.38 64.77 90)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(uuid "1e260bbd-e756-4556-8dc5-30cb5f22e294")
 		(property "Reference" "C1"
@@ -3261,6 +3261,15 @@
 			)
 		)
 		(property "LCSC" "C49678"
+			(at 119.38 64.77 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 119.38 64.77 90)
 			(effects
 				(font
@@ -3355,8 +3364,8 @@
 		(at 63.5 91.44 0)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "26be3224-d9ca-4ea2-8e0a-514555338e7b")
@@ -3397,6 +3406,15 @@
 			)
 		)
 		(property "Description" "test point"
+			(at 63.5 91.44 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 63.5 91.44 0)
 			(effects
 				(font
@@ -3543,6 +3561,15 @@
 				(hide yes)
 			)
 		)
+		(property "Purchase" ""
+			(at 119.38 73.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "6"
 			(uuid "510ff9a2-07f4-46d8-ba24-1e7f1bba3985")
 		)
@@ -3627,6 +3654,15 @@
 			)
 		)
 		(property "LCSC" "C1341298"
+			(at 181.61 99.06 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 181.61 99.06 0)
 			(effects
 				(font
@@ -3748,8 +3784,8 @@
 		(at 146.05 76.2 0)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(uuid "49af4a13-cdb3-455e-8918-a711244a95c9")
 		(property "Reference" "C2"
@@ -3806,6 +3842,15 @@
 				(hide yes)
 			)
 		)
+		(property "Purchase" ""
+			(at 146.05 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "28087089-a60a-4335-9666-232ad6f7aa4f")
 		)
@@ -3826,8 +3871,8 @@
 		(at 140.97 73.66 90)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(uuid "53e2138e-807a-4eec-9955-02560e1ef61b")
 		(property "Reference" "R2"
@@ -3874,6 +3919,15 @@
 			)
 		)
 		(property "LCSC" "C2889523"
+			(at 140.97 73.66 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 140.97 73.66 90)
 			(effects
 				(font
@@ -4034,8 +4088,8 @@
 		(at 81.28 57.15 180)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "8e088fce-0110-49e6-8c43-116e9427c757")
@@ -4093,6 +4147,15 @@
 				(hide yes)
 			)
 		)
+		(property "Purchase" ""
+			(at 81.28 57.15 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "7e08d903-2119-4ead-9ef5-044b3d0afead")
 		)
@@ -4122,8 +4185,8 @@
 		(at 153.67 111.76 270)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "999d782b-c752-4a5f-965a-3e38038918eb")
@@ -4173,6 +4236,15 @@
 			)
 		)
 		(property "LCSC" "C188548"
+			(at 153.67 111.76 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 153.67 111.76 90)
 			(effects
 				(font
@@ -4267,8 +4339,8 @@
 		(at 165.1 69.85 180)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(uuid "a5e3daf2-10d9-4167-8319-74c2e8c2cc65")
 		(property "Reference" "R3"
@@ -4325,6 +4397,15 @@
 				(hide yes)
 			)
 		)
+		(property "Purchase" ""
+			(at 165.1 69.85 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "fe121ce4-32ce-433f-814e-e206b3f72f1c")
 		)
@@ -4345,8 +4426,8 @@
 		(at 186.69 69.85 270)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(uuid "afaf9c4d-cad1-4a31-a2cc-0d8332e343a4")
 		(property "Reference" "C3"
@@ -4393,6 +4474,15 @@
 			)
 		)
 		(property "LCSC" "C49678"
+			(at 186.69 69.85 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 186.69 69.85 90)
 			(effects
 				(font
@@ -4552,8 +4642,8 @@
 		(at 63.5 81.28 0)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "b589eb8b-52fe-4f81-9cb0-9a4d0ab08991")
@@ -4594,6 +4684,15 @@
 			)
 		)
 		(property "Description" "test point"
+			(at 63.5 81.28 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 63.5 81.28 0)
 			(effects
 				(font
@@ -4678,6 +4777,15 @@
 				(hide yes)
 			)
 		)
+		(property "Purchase" ""
+			(at 143.51 114.3 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "3fad6158-872f-4d3e-a719-0688ed9afce8")
 		)
@@ -4701,8 +4809,8 @@
 		(at 63.5 71.12 0)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "ca09ce99-57ac-4c23-bc91-e91f79203a6c")
@@ -4743,6 +4851,15 @@
 			)
 		)
 		(property "Description" "test point"
+			(at 63.5 71.12 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 63.5 71.12 0)
 			(effects
 				(font
@@ -4911,7 +5028,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "50 mOhm"
+		(property "Value" "0.05 Ohm"
 			(at 91.948 76.962 0)
 			(effects
 				(font
@@ -4956,6 +5073,15 @@
 				(hide yes)
 			)
 		)
+		(property "Purchase" ""
+			(at 90.17 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "6d512f52-1521-473a-9331-4943cde97e64")
 		)
@@ -4976,8 +5102,8 @@
 		(at 63.5 101.6 0)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
+		(in_bom no)
+		(on_board no)
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "fc91fe92-b3f1-4b8b-b68a-b4d1e01fd022")
@@ -5018,6 +5144,15 @@
 			)
 		)
 		(property "Description" "test point"
+			(at 63.5 101.6 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Purchase" ""
 			(at 63.5 101.6 0)
 			(effects
 				(font
