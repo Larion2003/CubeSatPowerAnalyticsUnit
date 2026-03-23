@@ -4267,7 +4267,7 @@
 		(descr "SOD-323")
 		(tags "SOD-323")
 		(property "Reference" "D1"
-			(at 0 -1.85 180)
+			(at 0.094 1.594 180)
 			(layer "F.SilkS")
 			(uuid "02bbf1e3-9340-471d-b0c6-7088fe25bfe2")
 			(effects
