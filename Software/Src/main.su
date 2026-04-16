@@ -1,0 +1,2 @@
+Src/main.cpp:4:6:void SystemInit()	4	static
+Src/main.cpp:9:5:int main()	4	static

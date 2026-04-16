@@ -1,10 +1,21 @@
-# KiCad files
-*-backups/
-*.bak
-*.lck
-*-save.kicad_pcb
-*-save.kicad_sch
-fp-info-cache
-*.kicad_prl
-*_autosave-*
+# --- HARDWARE ---
+Hardware/*-backups/
+Hardware/*.bak
+Hardware/*.lck
+Hardware/*-save.kicad_pcb
+Hardware/*-save.kicad_sch
+Hardware/fp-info-cache
+Hardware/*.kicad_prl
+Hardware/*_autosave-*
+Hardware/**/*.zip
+**/cp_backup/
 
+# --- SOFTWARE ---
+Software/*.elf
+Software/*.bin
+Software/*.map
+Software/*.o
+Software/*.su
+Software/build/
+Software/.kdev4/
+.kdev4/
