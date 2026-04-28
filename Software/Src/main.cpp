@@ -1,8 +1,71 @@
 #include "main.hpp"
 #include "stm32l431xx.h"
+#include <cstddef>
 
-#define ADC1_CHANNEL 5
-#define USART1_DIV 417
+// Anonymous namespace
+namespace {
+    // ADC Channel configuration
+    constexpr size_t ADC1_CHANNEL = 5;
+    // System clock frequency (4 MHz)
+    constexpr size_t freq_sys = 4000000;
+    // Target baud rate for USART1
+    constexpr size_t target_baudrate = 9600;
+
+   /**
+     * @brief Initializes the Independent Watchdog (IWDG).
+     * @details Sets a timeout of approximately 1 second using the LSI clock.
+     * * Calculations based on RM0394 Reference Manual:
+     * - LSI Frequency (f_LSI) ≈ 32 kHz
+     * - Prescaler (PR) = 64 (Register value 0x04)
+     * - Reload Value (RLR) = 500
+     * * Formula: Timeout = (Prescaler * RLR) / f_LSI
+     * Timeout = (64 * 500) / 32000 = 1.0 seconds.
+     * * Once started, the IWDG cannot be stopped except by a system reset.
+     */
+    void init_watchdog() {
+        // Write access key to IWDG_KR to unlock PR and RLR registers
+        // Refer to RM0394, IWDG_KR register description
+        IWDG->KR = 0x5555;
+
+        // Set the Prescaler to 64
+        // 32 kHz / 64 = 500 Hz (Each counter tick is 2ms)
+        IWDG->PR = 0x04;
+
+        // Set the Reload Value (RLR)
+        // 500 ticks * 2ms = 1000ms (1 second timeout)
+        IWDG->RLR = 500;
+
+        // Reload the counter with the RLR value (Refresh)
+        // Writing 0xAAAA also protects the registers again
+        IWDG->KR = 0xAAAA;
+
+        // Start the watchdog counter
+        // After this, the software must write 0xAAAA to KR regularly
+        IWDG->KR = 0xCCCC;
+    }
+
+    /**
+     * @brief Calculates the USART Baud Rate Register (BRR) value.
+     * @details Refer to STM32L4 Reference Manual (RM0394), page 743.
+     * Formula: BRR = fck / BaudRate
+     */
+    constexpr size_t calculate_brr(size_t freq, size_t baud) {
+        return freq / baud;
+    }
+
+    // Compile-time calculation of the baud rate prescaler
+    constexpr size_t usart1_brr_value = calculate_brr(freq_sys, target_baudrate);
+
+    /**
+     * @brief Compile-time validation of the baud rate error.
+     * @details Ensures that the integer division rounding error stays within 5%.
+     */
+    static_assert((freq_sys / target_baudrate) * target_baudrate > (freq_sys * 0.95),
+        "Baud rate configuration error exceeds 5% threshold!"
+    );
+
+}
+
 
 /**
  * @brief  Provides a precise delay in microseconds.
@@ -46,32 +109,43 @@ extern "C" void SystemInit(){
     RCC->AHB2ENR |= RCC_AHB2ENR_ADCEN;
 
 
-
     ////////////////////////////////////////////////////////////////////
     // USART1 CONFIG
     ////////////////////////////////////////////////////////////////////
 
     // Configure GPIOA pins for USART1 (PA9 = TX, PA10 = RX)
+    // and preserve SWD pins (PA13 = JTMS/SWDIO, PA14 = JTCK/SWCLK)
 
-    // Clear mode bits for PA9 and PA10
-    GPIOA->MODER &= ~(GPIO_MODER_MODE9 | GPIO_MODER_MODE10);
+    // Optimized GPIOA MODER configuration:
 
-    // Set PA9 and PA10 to Alternate Function mode (Mode 10)
-    GPIOA->MODER |= (GPIO_MODER_MODE9_1 | GPIO_MODER_MODE10_1);
+    // Clear mode bits for USART1 (PA9, PA10) and SWD (PA13, PA14) pins
+    GPIOA->MODER &= ~(GPIO_MODER_MODE9 |
+                     GPIO_MODER_MODE10 |
+                     GPIO_MODER_MODE13 |
+                     GPIO_MODER_MODE14);
 
-    // Configure Alternate Function 7 (USART1_TX, USART1_RX) for PA9 and PA10
+    // Set pins to Alternate Function mode (Mode 10)
+    // Note: PA13 and PA14 must remain in AF mode to maintain debug (SWD) access
+    GPIOA->MODER |= (GPIO_MODER_MODE9_1 |
+                    GPIO_MODER_MODE10_1 |
+                    GPIO_MODER_MODE13_1 |
+                    GPIO_MODER_MODE14_1);
+
+    // Configure Alternate Function 7 for USART1 (PA9, PA10)
     // AFR[1] handles pins 8 to 15 (AFRH)
-    // Clear bits
     GPIOA->AFR[1] &= ~(GPIO_AFRH_AFSEL9 | GPIO_AFRH_AFSEL10);
-    // Set bits
     GPIOA->AFR[1] |= (7 << GPIO_AFRH_AFSEL9_Pos) | (7 << GPIO_AFRH_AFSEL10_Pos);
+
+    // Note: SWD pins (PA13, PA14) use AF0 by default,
+    // so we don't strictly need to rewrite their AFR bits,
+    // but preserving their MODER bits is crucial.
 
 
     // Configure USART1 BaudRate (9600 bps)
 
     // Formula: USARTDIV = fck / BaudRate
     // MSI clock is 4 MHz (reset value) ==> 4,000,000 / 9600 = 416.66
-    USART1->BRR = USART1_DIV;
+    USART1->BRR = usart1_brr_value;
 
 
     // Configure USART1 Control Registers
@@ -133,7 +207,8 @@ extern "C" void SystemInit(){
 
 int main(){
 
-    SystemInit();
+    // TODO: Enable Independent Watchdog (IWDG) before final production release.
+    // init_watchdog();
 
 	while(true){
         // code
