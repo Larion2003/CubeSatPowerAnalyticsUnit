@@ -1,3 +1,0 @@
-Src/main.cpp:14:13:void delay_us(uint32_t)	24	static
-Src/main.cpp:26:17:void SystemInit()	8	static
-Src/main.cpp:134:5:int main()	8	static
