@@ -268,7 +268,7 @@ extern "C" void SystemInit(){
 
 int main(){
     // TODO: Enable Independent Watchdog (IWDG) before final production release.
-    // init_watchdog();
+    init_watchdog();
 
     // Enable the internal voltage reference (VREFINT) bridge.
     // This connects the internal 1.212V reference to ADC1 channel 0.
