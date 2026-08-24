@@ -3,391 +3,375 @@
 #include <cstdio>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
-// Anonymous namespace
+// ==================================================================================================
+// TISAT-PROTOCOL SLAVE MODULE: PWR (Power Measurement)
+// ==================================================================================================
+// Frame Structure (Max 64 bytes total):
+//   [direction char(1)] [module id(3)] [payload(<=55, ends with '%')] [checksum(2 hex chars)] [\r\n]
+//
+//   '$' -> Inbound command from Master (Pico W) to Slave
+//   '#' -> Outbound response from Slave to Master
+//
+//   Checksum = 8-bit sum (mod 256) of bytes from direction char up to '%',
+//              formatted as 2 uppercase ASCII hex digits.
+//
+// Commands Handled:
+//   - "ping"    -> "pong"              : Liveness verification (Polled every 5s)
+//   - "GETDATA" -> "U:..,I:..,P:.."    : Telemetry request     (Polled every 3s)
+// ==================================================================================================
+
 namespace {
-    //////////////////////////////////////////////////////////////////////////////////////////////////
-    // CONSTANTS
-    //////////////////////////////////////////////////////////////////////////////////////////////////
-    // ADC Channel configuration
-    constexpr const size_t ADC1_CHANNEL = 5;
-    // System clock frequency (4 MHz)
-    constexpr const size_t FREQ_SYS = 4000000;
-    // Target baud rate for USART1
-    constexpr const size_t TARGET_BAUDRATE = 9600;
-    // Internal reference is connected to Channel 0
-    constexpr const uint32_t ADC_CH0_VREFINT = 0;
-    // Shunt resistor value in Ohms.
-    constexpr const float SHUNT_RESISTOR = 0.05f;
-    // Message buffer size (64 characters)
-    constexpr const uint8_t MSG_BUFFER_SIZE = 1 << 6;
-    // Periodic telemetry transmission interval defined in seconds
-    constexpr const uint32_t TX_INTERVAL_SEC = 2;
 
-    /* VREFINT_CAL is a factory-stored value.
-     * Refer to STM32L431xx Datasheet, Table 15 (Embedded internal voltage reference).
-     * This memory address (0x1FFF75AA) contains the raw ADC value of the 1.212V
-     * internal reference, measured at the factory with VDDA = 3.0V.
-     */
+    // -------------------------------- CONSTANTS --------------------------------
+
+    constexpr const size_t   ADC1_CHANNEL    = 5;          // PA0 current shunt input channel
+    constexpr const uint32_t ADC_CH0_VREFINT = 0;          // Internal reference voltage channel
+    constexpr const float    SHUNT_RESISTOR  = 0.05f;      // 50 mOhm shunt resistance
+    constexpr const size_t   FREQ_SYS        = 4000000;    // 4 MHz MSI system clock
+    constexpr const size_t   TARGET_BAUDRATE = 9600;
+    constexpr const uint8_t  MSG_BUFFER_SIZE = 64;         // Max frame buffer length
+
+    // Module Identification
+    constexpr const char MODULE_ID[3] = {'P', 'W', 'R'};
+    constexpr const char DIR_FROM_MASTER = '$';
+    constexpr const char DIR_TO_MASTER   = '#';
+
+    constexpr const char* CMD_PING     = "ping";
+    constexpr const char* CMD_GET_DATA = "GETDATA";
+    constexpr const char* RESP_PONG    = "pong";
+
+    // Factory calibration address for internal voltage reference (1.212V typical)
     const uint16_t* VREF_INT_CAL_ADDR = reinterpret_cast<uint16_t*>(0x1FFF75AA);
 
-    //////////////////////////////////////////////////////////////////////////////////////////////////
-    // VARIABLES FOR INTERRUPT DRIVEN TRANSMISSION
-    //////////////////////////////////////////////////////////////////////////////////////////////////
+    // Baud Rate Generator Register Value: 4,000,000 / 9600 = 416
+    constexpr size_t USART1_BRR = FREQ_SYS / TARGET_BAUDRATE;
 
-    // Buffer used by the ISR to transmit telemetry messages in the background
-    char tx_buffer[MSG_BUFFER_SIZE];
-    // Tracks the current character index being transmitted by the interrupt handler
-    volatile size_t tx_index = 0;
-    // Stores the total length of the current message inside the tx_buffer
+    // -------------------------------- BUFFERS --------------------------------
+
+    char     tx_buffer[MSG_BUFFER_SIZE];
+    volatile size_t tx_index  = 0;
     volatile size_t tx_length = 0;
 
-    //////////////////////////////////////////////////////////////////////////////////////////////////
-    // FUNCTIONS
-    //////////////////////////////////////////////////////////////////////////////////////////////////
+    char     rx_buffer[MSG_BUFFER_SIZE];
+    volatile size_t rx_index = 0;
+    volatile bool   rx_ready = false;
+
+    // -------------------------------- TELEMETRY CACHE --------------------------------
+
+    volatile float shunt_voltage = 0.0f;
+    volatile float shunt_current = 0.0f;
+    volatile float shunt_power   = 0.0f;
+
+    // -------------------------------- PROTOCOL HELPERS --------------------------------
 
     /**
-     * @brief Sends a single character to USART1.
+     * @brief Computes Tisat 8-bit sum checksum (mod 256) up to '%' marker.
      */
-    void send_char(char c) {
-        while (!(USART1->ISR & USART_ISR_TXE));
-        USART1->TDR = c;
-    }
-
-    /**
-     * @brief Sends a null-terminated string to USART1.
-     * Uses the \0 character to find the end of the text.
-     */
-    void send_string(const char* str) {
-        while (*str != '\0') {
-            send_char(*str);
-            str++;
+    uint8_t calc_checksum(const char* frame, size_t percent_index) {
+        uint8_t sum = 0;
+        for (size_t i = 0; i <= percent_index; i++) {
+            sum += static_cast<uint8_t>(frame[i]);
         }
+        return sum;
+    }
+
+    char nibble_to_hex(uint8_t n) {
+        const char LUT[] = "0123456789ABCDEF";
+        return LUT[n & 0x0F];
+    }
+
+    uint8_t hex_to_nibble(char c) {
+        if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+        if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
+        if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+        return 0;
+    }
+
+    int find_percent(const char* buf, size_t len) {
+        for (size_t i = 0; i < len; i++) {
+            if (buf[i] == '%') return static_cast<int>(i);
+        }
+        return -1;
     }
 
     /**
-     * @brief Reads a raw 12-bit value from a specific ADC channel.
-     * @param channel The ADC channel to sample (0 for V_REF_INT, 5 for shunt resistor).
-     * @return Raw ADC conversion result (0-4095).
+     * @brief Constructs Tisat response frame and initiates non-blocking TX interrupt stream.
+     * Output format: '#' + "PWR" + payload + '%' + checksum(2 hex) + "\r\n"
+     *
+     * In single-wire half-duplex mode, transmitted bytes echo back onto the RX line.
+     * RXNEIE is temporarily disabled during TX and re-enabled in the ISR once transmission completes.
      */
+    void send_response(const char* payload) {
+        size_t idx = 0;
+
+        tx_buffer[idx++] = DIR_TO_MASTER;
+        tx_buffer[idx++] = MODULE_ID[0];
+        tx_buffer[idx++] = MODULE_ID[1];
+        tx_buffer[idx++] = MODULE_ID[2];
+
+        for (const char* p = payload; *p != '\0' && idx < (MSG_BUFFER_SIZE - 5); p++) {
+            tx_buffer[idx++] = *p;
+        }
+
+        const size_t percent_index = idx;
+        tx_buffer[idx++] = '%';
+
+        const uint8_t chk = calc_checksum(tx_buffer, percent_index);
+        tx_buffer[idx++] = nibble_to_hex(chk >> 4);
+        tx_buffer[idx++] = nibble_to_hex(chk & 0x0F);
+
+        tx_buffer[idx++] = '\r';
+        tx_buffer[idx++] = '\n';
+
+        // Disable RX interrupt to prevent parsing localized line transmission echoes
+        USART1->CR1 &= ~USART_CR1_RXNEIE;
+
+        tx_length = idx;
+        tx_index  = 0;
+
+        // Trigger TXE interrupt stream
+        USART1->CR1 |= USART_CR1_TXEIE;
+    }
+
+    // -------------------------------- ADC HELPER --------------------------------
+
     uint32_t read_adc(uint32_t channel) {
-        // Select the channel in the sequence register
-        // Set L=0 (1 conversion) and SQ1 to our target channel.
         ADC1->SQR1 = (channel << ADC_SQR1_SQ1_Pos);
-
-        // Start the conversion
-        ADC1->CR |= ADC_CR_ADSTART;
-
-        // Wait for the 'End Of Conversion' (EOC) flag in the Status Register
+        ADC1->CR  |= ADC_CR_ADSTART;
         while (!(ADC1->ISR & ADC_ISR_EOC));
-
-        // Return the result from the Data Register (0 to 4095)
         return ADC1->DR;
     }
 
-   /**
-     * @brief Initializes the Independent Watchdog (IWDG).
-     * @details Sets a timeout of approximately 1 second using the LSI clock.
-     * * Calculations based on RM0394 Reference Manual:
-     * - LSI Frequency (f_LSI) ≈ 32 kHz
-     * - Prescaler (PR) = 64 (Register value 0x04)
-     * - Reload Value (RLR) = 500
-     * * Formula: Timeout = (Prescaler * RLR) / f_LSI
-     * Timeout = (64 * 500) / 32000 = 1.0 seconds.
-     * * Once started, the IWDG cannot be stopped except by a system reset.
-     */
-    void init_watchdog() {
-        // Write access key to IWDG_KR to unlock PR and RLR registers
-        // Refer to RM0394, IWDG_KR register description
-        IWDG->KR = 0x5555;
+} // anonymous namespace
 
-        // Set the Prescaler to 64
-        // 32 kHz / 64 = 500 Hz (Each counter tick is 2ms)
-        IWDG->PR = 0x04;
+// -------------------------------- DELAY HELPER --------------------------------
 
-        // Set the Reload Value (RLR)
-        // 500 ticks * 2ms = 1000ms (1 second timeout)
-        IWDG->RLR = 500;
-
-        // Reload the counter with the RLR value (Refresh)
-        // Writing 0xAAAA also protects the registers again
-        IWDG->KR = 0xAAAA;
-
-        // Start the watchdog counter
-        // After this, the software must write 0xAAAA to KR regularly
-        IWDG->KR = 0xCCCC;
-    }
-
-    /**
-     * @brief Calculates the USART Baud Rate Register (BRR) value.
-     * @details Refer to STM32L4 Reference Manual (RM0394), page 743.
-     * Formula: BRR = fck / BaudRate
-     */
-    constexpr size_t calculate_brr(size_t freq, size_t baud) {
-        return freq / baud;
-    }
-
-    // Compile-time calculation of the baud rate prescaler
-    constexpr size_t usart1_brr_value = calculate_brr(FREQ_SYS, TARGET_BAUDRATE);
-
-    /**
-     * @brief Compile-time validation of the baud rate error.
-     * @details Ensures that the integer division rounding error stays within 5%.
-     */
-    static_assert((FREQ_SYS / TARGET_BAUDRATE) * TARGET_BAUDRATE > (FREQ_SYS * 0.95),
-        "Baud rate configuration error exceeds 5% threshold!"
-    );
-
+static void delay_us(uint32_t us) {
+    uint32_t start = DWT->CYCCNT;
+    // System clock @ 4 MHz: 1 us = 4 clock cycles
+    while ((DWT->CYCCNT - start) < (us * 4));
 }
 
-/**
- * @brief  Provides a precise delay in microseconds.
- * @details Uses the processor's DWT cycle counter to wait.
- * At 4MHz, 1 us equals 4 CPU cycles.
- * @param  us: Delay time in microseconds.
- * @retval None
- */
-static void delay_us(uint32_t us){
-    uint32_t start_tick = DWT->CYCCNT;
-    // Calculate total ticks: microseconds * (Frequency / 1,000,000)
-    uint32_t delay_ticks = us * 4;
+// ==================================================================================================
+// SystemInit — Peripherals Initialization Routine
+// ==================================================================================================
+extern "C" void SystemInit() {
 
-    while ((DWT->CYCCNT - start_tick) < delay_ticks);
-}
-
-/**
- * @brief  Performs low-level hardware initialization for the subsystem.
- * @retval None
- */
-extern "C" void SystemInit(){
-
-    // Enable DWT Cycle Counter hardware
+    // Enable DWT Cycle Counter for delay timing
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    // Reset counter
     DWT->CYCCNT = 0;
-    // Start counter
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
 
-    ////////////////////////////////////////////////////////////////////
-    // Reset and Clock Control - Enable peripheral clocks
-    ////////////////////////////////////////////////////////////////////
+    // Enable Peripheral Clocks
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;   // GPIOA Clock
+    RCC->APB2ENR |= RCC_APB2ENR_USART1EN;  // USART1 Clock
+    RCC->AHB2ENR |= RCC_AHB2ENR_ADCEN;     // ADC1 Clock
 
-    // Enable GPIOA clock (AHB2 bus)
-    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
-    // Enable USART1 clock (APB2 bus)
-    RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
-    // Enable ADC1 clock (AHB2 bus)
-    RCC->AHB2ENR |= RCC_AHB2ENR_ADCEN;
+    // ==========================================================================
+    // USART1 Configuration — Half-Duplex Single-Wire (9600 Baud)
+    // Pin: PA9 (Single shared TX/RX line)
+    // ==========================================================================
 
-    ////////////////////////////////////////////////////////////////////
-    // USART1 CONFIG
-    ////////////////////////////////////////////////////////////////////
+    // PA9 & PA10 -> Alternate Function Mode (AF7 = USART1)
+    // Preserve PA13 & PA14 debug pin configurations
+    GPIOA->MODER &= ~(GPIO_MODER_MODE9  |
+                      GPIO_MODER_MODE10 |
+                      GPIO_MODER_MODE13 |
+                      GPIO_MODER_MODE14);
+    GPIOA->MODER |=  (GPIO_MODER_MODE9_1  |
+                      GPIO_MODER_MODE10_1 |
+                      GPIO_MODER_MODE13_1 |
+                      GPIO_MODER_MODE14_1);
 
-    // Configure GPIOA pins for USART1 (PA9 = TX, PA10 = RX)
-    // and preserve SWD pins (PA13 = JTMS/SWDIO, PA14 = JTCK/SWCLK)
-
-    // Optimized GPIOA MODER configuration:
-
-    // Clear mode bits for USART1 (PA9, PA10) and SWD (PA13, PA14) pins
-    GPIOA->MODER &= ~(GPIO_MODER_MODE9 |
-                     GPIO_MODER_MODE10 |
-                     GPIO_MODER_MODE13 |
-                     GPIO_MODER_MODE14);
-
-    // Set pins to Alternate Function mode (Mode 10)
-    // Note: PA13 and PA14 must remain in AF mode to maintain debug (SWD) access
-    GPIOA->MODER |= (GPIO_MODER_MODE9_1 |
-                    GPIO_MODER_MODE10_1 |
-                    GPIO_MODER_MODE13_1 |
-                    GPIO_MODER_MODE14_1);
-
-    // Configure Alternate Function 7 for USART1 (PA9, PA10)
-    // AFR[1] handles pins 8 to 15 (AFRH)
     GPIOA->AFR[1] &= ~(GPIO_AFRH_AFSEL9 | GPIO_AFRH_AFSEL10);
-    GPIOA->AFR[1] |= (7 << GPIO_AFRH_AFSEL9_Pos) | (7 << GPIO_AFRH_AFSEL10_Pos);
+    GPIOA->AFR[1] |=  (7u << GPIO_AFRH_AFSEL9_Pos) |
+                      (7u << GPIO_AFRH_AFSEL10_Pos);
 
-    // Note: SWD pins (PA13, PA14) use AF0 by default,
-    // so I don't strictly need to rewrite their AFR bits,
-    // but preserving their MODER bits is crucial.
+    USART1->BRR = USART1_BRR;
 
-    // Configure USART1 BaudRate (9600 bps)
-
-    // Formula: USARTDIV = fck / BaudRate
-    // MSI clock is 4 MHz (reset value) ==> 4,000,000 / 9600 = 416.66
-    USART1->BRR = usart1_brr_value;
-
-    // Configure USART1 Control Registers
-
-    // Set TX pin active level inversion (CR2 bit 17)
-    // This MUST be done while UE=0 (USART is disabled).
+    // Enable Hardware TX Output Inversion (TXINV) for active line interface circuit matching
     USART1->CR2 |= USART_CR2_TXINV;
 
-    // Enable Half-Duplex mode (single wire communication)
+    // Enable Half-Duplex Single-Wire Mode
     USART1->CR3 |= USART_CR3_HDSEL;
-    // Enable Transmitter, Receiver and USART peripheral
-    USART1->CR1 |= (USART_CR1_TE | USART_CR1_RE | USART_CR1_UE);
-    // Enable USART1 global interrupt in the Nested Vectored Interrupt Controller (NVIC)
+
+    // Enable Transmitter, Receiver, Peripheral, and RX Not-Empty Interrupts
+    USART1->CR1 |= USART_CR1_TE | USART_CR1_RE | USART_CR1_UE | USART_CR1_RXNEIE;
+
+    // PA9 Output Type: OPEN-DRAIN
+    // Configured after UE=1 to prevent driver overrides. Open-drain configuration
+    // allows the bus line to float HIGH via external pull-up resistor when idle.
+    GPIOA->OTYPER |= (1u << 9u);
+
     NVIC_EnableIRQ(USART1_IRQn);
 
+    // ==========================================================================
+    // ADC1 Configuration — PA0 Shunt Input & VREFINT Channel
+    // ==========================================================================
 
-    ////////////////////////////////////////////////////////////////////
-    // ADC1 CONFIG
-    ////////////////////////////////////////////////////////////////////
+    // PA0 -> Analog Mode
+    GPIOA->MODER &= ~GPIO_MODER_MODE0;
+    GPIOA->MODER |=  GPIO_MODER_MODE0_0 | GPIO_MODER_MODE0_1;
 
-    // Configure PA0 (= ADC1_IN) as Analog Mode
+    // Clock Selection: Synchronous AHB / 1
+    ADC1_COMMON->CCR |= (1u << ADC_CCR_CKMODE_Pos);
 
-    // Clear mode bits for PA0
-    GPIOA->MODER &= ~(GPIO_MODER_MODE0);
-    // Set PA0 to Analog Mode (11)
-    GPIOA->MODER |= (GPIO_MODER_MODE0_0 | GPIO_MODER_MODE0_1);
-
-    // Configure ADC Clock Source
-    // Set ADC clock to synchronous with the AHB clock (divided by 1)
-    ADC1_COMMON->CCR |= (1 << ADC_CCR_CKMODE_Pos);
-
-
-    // Wake up ADC from deep power down
-
-    // Exit deep power down mode
-    ADC1->CR &= ~(ADC_CR_DEEPPWD);
-    // Enable ADC internal voltage regulator
-    ADC1->CR |= ADC_CR_ADVREGEN;
-    // Wait a bit for the regulator to stabilize
+    // Disable Deep Power Down, Enable Voltage Regulator
+    ADC1->CR &= ~ADC_CR_DEEPPWD;
+    ADC1->CR |=  ADC_CR_ADVREGEN;
     delay_us(20);
 
-    // ADC Calibration
-
-    // Start calibration
+    // Execute Calibration Routine
     ADC1->CR |= ADC_CR_ADCAL;
-    // Wait until calibration is done
-    while(ADC1->CR & ADC_CR_ADCAL);
+    while (ADC1->CR & ADC_CR_ADCAL);
 
+    // Sequence Length = 1 Conversion
+    ADC1->SQR1 &= ~ADC_SQR1_L;
+    ADC1->SQR1 |=  (ADC1_CHANNEL << ADC_SQR1_SQ1_Pos);
 
-    // Configure the sequence
-
-    // Set sequence length to 1 (L=0 means 1 conversion) in SQR1 register
-    ADC1->SQR1 &= ~(ADC_SQR1_L);
-    // Set ADC channel (PA0)
-    ADC1->SQR1 |= (ADC1_CHANNEL << ADC_SQR1_SQ1_Pos);
-
-
-    // Enable ADC
+    // Enable ADC Peripheral
     ADC1->CR |= ADC_CR_ADEN;
-    // Wait until ADC is ready
-    while(!(ADC1->ISR & ADC_ISR_ADRDY));
-
+    while (!(ADC1->ISR & ADC_ISR_ADRDY));
 }
 
-/**
- * @brief  USART1 Global Interrupt Handler.
- * Handles background character transmission using TXE interrupts.
- * @retval None
- */
-extern "C" void USART1_IRQHandler(void) {
-    // Check if the Transmit Data Register Empty (TXE) interrupt flag is set
-    // and ensure that the TXE interrupt generation is enabled
+// ==================================================================================================
+// USART1 Interrupt Service Routine
+// ==================================================================================================
+extern "C" void USART1_IRQHandler() {
+
+    // Transmit Branch (TXE)
     if ((USART1->ISR & USART_ISR_TXE) && (USART1->CR1 & USART_CR1_TXEIE)) {
-        // If there are still characters left in the buffer to transmit
         if (tx_index < tx_length) {
-            // Write the next character to the Transmit Data Register
-            USART1->TDR = tx_buffer[tx_index];
-            // Advance the index to the next character
-            tx_index = tx_index + 1;
+            USART1->TDR = static_cast<uint8_t>(tx_buffer[tx_index]);
+            tx_index += 1;
         } else {
-            // All characters have been sent, disable the TXE interrupt
+            // Transmission Complete — Disable TXE Interrupt
             USART1->CR1 &= ~USART_CR1_TXEIE;
+
+            // Clear residual line echo bytes and overrun flags resulting from half-duplex operation
+            (void)USART1->RDR;
+            if (USART1->ISR & USART_ISR_ORE) {
+                USART1->ICR = USART_ICR_ORECF;
+            }
+
+            // Flush partial frame state and re-enable RX interrupt
+            rx_index = 0;
+            rx_ready = false;
+            USART1->CR1 |= USART_CR1_RXNEIE;
+        }
+    }
+
+    // Receive Branch (RXNE)
+    if ((USART1->ISR & USART_ISR_RXNE) && (USART1->CR1 & USART_CR1_RXNEIE)) {
+
+        // Clear error condition flags (Framing, Noise, Overrun) silently
+        if (USART1->ISR & (USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE)) {
+            USART1->ICR = USART_ICR_FECF | USART_ICR_NCF | USART_ICR_ORECF;
+            (void)USART1->RDR;
+            return;
+        }
+
+        char c = static_cast<char>(USART1->RDR);
+
+        if (c == DIR_FROM_MASTER) {
+            // Master Start Frame Character Received
+            rx_index = 0;
+            rx_buffer[rx_index] = c;
+            rx_index += 1;
+        } else if (rx_index > 0) {
+            if (rx_index < (MSG_BUFFER_SIZE - 1)) {
+                rx_buffer[rx_index] = c;
+                rx_index += 1;
+
+                if (c == '\n') {
+                    // Frame Termination Received
+                    rx_buffer[rx_index] = '\0';
+                    rx_ready = true;
+                    // Pause RX interrupts until processing completes in main()
+                    USART1->CR1 &= ~USART_CR1_RXNEIE;
+                }
+            } else {
+                // Overflow Protection Reset
+                rx_index = 0;
+            }
         }
     }
 }
 
-int main(){
-    // TODO: Enable Independent Watchdog (IWDG) before final production release.
-    // init_watchdog();
-
-    // Enable the internal voltage reference (VREFINT) bridge.
-    // This connects the internal 1.212V reference to ADC1 channel 0.
-    // Refer to RM0394, section 15.6 (ADC_CCR register, VREFEN bit).
+// ==================================================================================================
+// Main Execution Loop
+// ==================================================================================================
+int main() {
+    // Enable Internal Reference Channel
     ADC1_COMMON->CCR |= ADC_CCR_VREFEN;
-
-    // Wait for the internal voltage reference to stabilize
     delay_us(20);
 
-    // Variables used for the non-blocking telemetry interval timer
-    // Compile-time calculation of target interval mapped to CPU clock cycles
-    constexpr uint32_t TX_INTERVAL_TICKS = TX_INTERVAL_SEC * FREQ_SYS;
-    uint32_t last_tx_tick = DWT->CYCCNT;
+    uint32_t vref_raw = 0;
+    uint32_t shunt_raw = 0;
+    float    vdda = 0.0f;
 
-    ////////////////////////////////////////////////////////////////////
-    // TELEMETRY AND DIAGNOSTIC VARIABLES
-    ////////////////////////////////////////////////////////////////////
-    // Raw ADC digital conversion values (0 to 4095)
-    uint32_t vref_int_adc_value = 0;
-    uint32_t shunt_adc_value = 0;
-
-    // Computed analog metrics for power analysis
-    float actual_vdda_voltage = 0.0f;
-    float shunt_voltage = 0.0f;
-    float shunt_current = 0.0f;
-    float shunt_power = 0.0f;
-
-    // Length of the formatted output string inside tx_buffer
-    size_t formatted_len = 0;
+    char payload_buf[MSG_BUFFER_SIZE];
 
     while (true) {
-        // Read the raw ADC value of the internal reference (VREFINT)
-        vref_int_adc_value = read_adc(ADC_CH0_VREFINT);
 
-        // Calculate the actual VDDA voltage based on factory calibration.
-        // Formula: VDDA = 3.0V * (*VREF_INT_CAL_ADDR / vref_int_adc_value)
-        actual_vdda_voltage = 3.0f * (static_cast<float>(*VREF_INT_CAL_ADDR) / static_cast<float>(vref_int_adc_value));
+        // Refresh Telemetry Measurements
+        vref_raw = read_adc(ADC_CH0_VREFINT);
+        vdda     = 3.0f * (static_cast<float>(*VREF_INT_CAL_ADDR) /
+                           static_cast<float>(vref_raw));
 
-        // Measure shunt voltage drop
-        // Read the raw ADC value from the shunt resistor pin (PA0 / CH5)
-        shunt_adc_value = read_adc(ADC1_CHANNEL);
-
-        // Convert the raw ADC value to real voltage using the calculated VDDA.
-        // Formula: shunt_voltage = (shunt_adc_value / 4095) * actual_vdda_voltage
-        shunt_voltage = (static_cast<float>(shunt_adc_value) / 4095.0f) * actual_vdda_voltage;
-
-        // Calculate shunt resistor's current
+        shunt_raw     = read_adc(ADC1_CHANNEL);
+        shunt_voltage = (static_cast<float>(shunt_raw) / 4095.0f) * vdda;
         shunt_current = shunt_voltage / SHUNT_RESISTOR;
+        shunt_power   = shunt_voltage * shunt_current;
 
-        // Power dissipation on the shunt resistor
-        // Formula: P = V * I
-        shunt_power = shunt_voltage * shunt_current;
+        // Process Incoming Command
+        if (rx_ready) {
+            const int pct = find_percent(rx_buffer, rx_index);
 
-        // Check if the scheduled time interval has elapsed to transmit data
-        if ((DWT->CYCCNT - last_tx_tick) >= TX_INTERVAL_TICKS) {
+            bool ok = (rx_buffer[0] == DIR_FROM_MASTER) &&
+                      (pct >= 4) &&
+                      (static_cast<size_t>(pct) + 2 < rx_index);
 
-            /* Format the raw metrics into a localized string buffer.
-             * Cast floats to double for compatibility with variadic function arguments.
-             */
-            formatted_len = snprintf(tx_buffer, MSG_BUFFER_SIZE,
-                "$TM,U:%.4fV,I:%.4fA,P:%.4fW\r\n",
-                static_cast<double>(shunt_voltage),
-                static_cast<double>(shunt_current),
-                static_cast<double>(shunt_power)
-            );
-
-            /* Trigger the background interrupt handler.
-             * Ensure the previous frame transmission has fully completed (TXEIE bit is 0)
-             * before resetting the index counters to prevent race conditions.
-             */
-            if ((USART1->CR1 & USART_CR1_TXEIE) == 0) {
-                tx_index = 0;
-                tx_length = formatted_len;
-
-                // Fire the TXE interrupt. Hardware will instantly call USART1_IRQHandler
-                // to start streaming the buffer byte-by-byte in the background.
-                USART1->CR1 |= USART_CR1_TXEIE;
+            if (ok) {
+                const uint8_t rx_chk =
+                    static_cast<uint8_t>(
+                        (hex_to_nibble(rx_buffer[pct + 1]) << 4) |
+                         hex_to_nibble(rx_buffer[pct + 2]));
+                ok = (rx_chk == calc_checksum(rx_buffer, static_cast<size_t>(pct)));
             }
 
-            // Update the time marker to schedule the next periodic transmission
-            last_tx_tick = DWT->CYCCNT;
-        }
+            if (ok) {
+                const bool for_us =
+                    (rx_buffer[1] == MODULE_ID[0]) &&
+                    (rx_buffer[2] == MODULE_ID[1]) &&
+                    (rx_buffer[3] == MODULE_ID[2]);
 
-        // The CPU can freely execute other repetitive tasks or sample diagnostics right here
-        // without being blocked by communication delays.
+                if (for_us) {
+                    const size_t payload_len = static_cast<size_t>(pct) - 4;
+                    memcpy(payload_buf, &rx_buffer[4], payload_len);
+                    payload_buf[payload_len] = '\0';
+
+                    if (strcmp(payload_buf, CMD_PING) == 0) {
+                        send_response(RESP_PONG);
+
+                    } else if (strcmp(payload_buf, CMD_GET_DATA) == 0) {
+                        snprintf(payload_buf, MSG_BUFFER_SIZE,
+                                 "U:%.4fV,I:%.4fA,P:%.4fW",
+                                 static_cast<double>(shunt_voltage),
+                                 static_cast<double>(shunt_current),
+                                 static_cast<double>(shunt_power));
+                        send_response(payload_buf);
+                    }
+                }
+            }
+
+            // Command Processed — Reset Buffer & Re-arm RX Interrupts
+            rx_index = 0;
+            rx_ready = false;
+            USART1->CR1 |= USART_CR1_RXNEIE;
+        }
     }
 
     return 0;
