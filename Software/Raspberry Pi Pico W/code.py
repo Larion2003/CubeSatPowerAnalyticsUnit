@@ -9,6 +9,7 @@ while True:
 
     answer = uart.read(1)
     print(answer)
+    time.sleep(0.5)
 
 # Startup code
 #import board
