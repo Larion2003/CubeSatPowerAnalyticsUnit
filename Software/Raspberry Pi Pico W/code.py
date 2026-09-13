@@ -6,7 +6,9 @@ uart = busio.UART(board.GP0,board.GP1,baudrate=9600)
 
 while True:
     uart.write("ping\n")
-    time.sleep(0.5)
+
+    answer = uart.read(1)
+    print(answer)
 
 # Startup code
 #import board
