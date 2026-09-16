@@ -12,6 +12,7 @@ Since the satellite is equipped with **solar panels** for battery charging, the 
 - [x] **Component Selection:** Selected specialized ICs for precision current sensing and power management.
 - [x] **Manufacturing & Assembly:** The custom PCB has been fully manufactured, and all SMD and through-hole components (including critical high-precision IC packages) have been successfully soldered and assembled.
 - [x] **Firmware Communication Loop:** Successfully established a low-level, non-blocking hardware communication interface between the STM32 MCU and a Raspberry Pi Pico W using UART with inverted polarity.
+- [x] **Ping-Pong Verification:** Confirmed working end-to-end UART communication on the shared single-wire bus — the STM32 now reliably replies `pong\n` to every `ping\n` sent by the Raspberry Pi Pico W, verifying the physical link between the two microcontrollers.
 - [ ] **Shunt Resistor Calibration:** The hardware is nearly complete; the final step involves performing a highly accurate **4-point (Kelvin) measurement** to calibrate the exact resistance value of the shunt resistor.
 
 ## Technical Roadmap & Development 
