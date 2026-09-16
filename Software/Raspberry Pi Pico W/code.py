@@ -2,7 +2,7 @@ import board
 import busio
 import time
 
-uart = busio.UART(board.GP0, board.GP1, baudrate=9600, timeout=1)
+uart = busio.UART(board.GP0, board.GP1, baudrate=9600)
 
 while True:
     uart.write("ping\n")
@@ -17,6 +17,15 @@ while True:
     # STM sends "pong\n":
     reply = uart.readline()
 
-    print("Raspberry Pi Pico W - (Master):", echo.decode().strip())
-    print("STM32L431KC         - (Slave) :", reply.decode().strip())
-      
+    try:
+        if echo:
+            print("Raspberry Pi Pico W - (Master):", echo.decode().strip())
+        if reply:
+            print("STM32L431KC         - (Slave) :", reply.decode().strip())
+    except UnicodeError:
+        # A shared single-wire bus occasionally picks up noise, corrupting
+        # one byte into an invalid UTF-8 sequence. 
+        print("Warning: corrupted byte received on the UART line, skipping")
+    
+    # For debug    
+    #time.sleep(0.1)
