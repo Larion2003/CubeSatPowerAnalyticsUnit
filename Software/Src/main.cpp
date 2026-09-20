@@ -5,9 +5,6 @@
 #include <cstdio>
 #include <cstring>
 
-// Forward declarations: these are defined further down in this file, but
-// send_frame() (inside the anonymous namespace below) needs to call them
-// before their actual definitions appear.
 char uart_getc();
 void uart_putc(char c);
 void uart_puts(const char* str);
@@ -34,11 +31,15 @@ namespace {
 
     // -------------------------------- CONSTANTS --------------------------------
 
-    constexpr const size_t   ADC1_CHANNEL    = 5;          // PA0 current shunt input channel
-    constexpr const float    SHUNT_RESISTOR  = 0.05f;      // 50 mOhm shunt resistance
-    constexpr const size_t   FREQ_SYS        = 4000000;    // 4 MHz MSI system clock
-    constexpr const size_t   TARGET_BAUDRATE = 9600;
-    constexpr const uint8_t  MSG_BUFFER_SIZE = 64;          // Max frame length, matches the protocol spec
+    constexpr const size_t   ADC1_CHANNEL     = 5;          // PA0 current shunt input channel
+    constexpr const uint32_t ADC_CH0_VREFINT  = 0;          // Internal reference voltage channel
+    constexpr const float    SHUNT_RESISTOR   = 0.05f;      // 50 mOhm shunt resistance, 4-point measured
+    constexpr const float    INA199_GAIN      = 50.0f;      // INA199A1 current-sense amplifier gain (V/V)
+    constexpr const float    ADC_FULL_SCALE   = 4095.0f;    // 12-bit ADC: max raw reading (2^12 - 1)
+    constexpr const float    VREFINT_CAL_VDDA = 3.0f;       // VDDA at which VREFINT_CAL was factory-measured
+    constexpr const size_t   FREQ_SYS         = 4000000;    // 4 MHz MSI system clock
+    constexpr const size_t   TARGET_BAUDRATE  = 9600;
+    constexpr const uint8_t  MSG_BUFFER_SIZE  = 64;          // Max frame length, matches the protocol spec
 
     // Factory calibration address for internal voltage reference (1.212V typical)
     const uint16_t* VREF_INT_CAL_ADDR = reinterpret_cast<uint16_t*>(0x1FFF75AA);
@@ -57,11 +58,11 @@ namespace {
     constexpr const char* RESP_PONG    = "pong";
 
     // -------------------------------- TELEMETRY CACHE --------------------------------
-    // Reported as-is in GETDATA replies. Real ADC measurement comes later.
+    // Refreshed by update_measurements() right before every GETDATA reply.
 
-    volatile float shunt_voltage = 0.0f;
-    volatile float shunt_current = 0.0f;
-    volatile float shunt_power   = 0.0f;
+    volatile float shunt_voltage = 0.0f;   // Bus voltage (VDDA), in volts
+    volatile float shunt_current = 0.0f;   // Current through the shunt, in amps
+    volatile float shunt_power   = 0.0f;   // shunt_voltage * shunt_current, in watts
 
     // -------------------------------- FRAME BUFFERS --------------------------------
 
@@ -69,6 +70,86 @@ namespace {
     uint8_t rx_index = 0;
 
     char    tx_buffer[MSG_BUFFER_SIZE];   // Holds one outgoing frame while it is built and sent
+
+    // -------------------------------- ADC HELPERS --------------------------------
+
+    // Busy-waits for approximately 'us' microseconds using the DWT cycle counter
+    // that SystemInit() already started. Only used for the short ADC voltage
+    // regulator startup delay, which is too brief to justify a hardware timer.
+    void delay_us(uint32_t us) {
+        const uint32_t start  = DWT->CYCCNT;
+        const uint32_t cycles = us * (FREQ_SYS / 1000000);
+        while (DWT->CYCCNT - start < cycles) {}
+    }
+
+    // Brings up ADC1: exits deep-power-down, enables its internal voltage
+    // regulator, calibrates it, and switches it on. Runs once, before any
+    // conversion is requested. Follows the power-up sequence from the
+    // reference manual's ADC chapter.
+    //
+    // PA0 itself needs no GPIO setup: every regular pin resets into analog
+    // mode by default, which is exactly the mode the ADC input needs.
+    void adc_init() {
+        ADC1->CR &= ~ADC_CR_DEEPPWD;     // Wake the ADC up from deep-power-down (its reset state)
+        ADC1->CR |= ADC_CR_ADVREGEN;     // Enable the ADC's internal voltage regulator
+        delay_us(20);                     // T_ADCVREG_STUP: regulator startup time
+
+        // Clocks ADC1 directly from HCLK with no prescaler — the simplest option,
+        // valid because this project runs the default, undivided 4 MHz MSI clock.
+        ADC1_COMMON->CCR = (ADC1_COMMON->CCR & ~ADC_CCR_CKMODE) | ADC_CCR_CKMODE_0;
+
+        // Connects the internal reference voltage to the ADC so it can be read
+        // like any other channel (channel 0, see ADC_CH0_VREFINT above).
+        ADC1_COMMON->CCR |= ADC_CCR_VREFEN;
+
+        ADC1->CR |= ADC_CR_ADCAL;             // Start single-ended calibration
+        while (ADC1->CR & ADC_CR_ADCAL) {}    // Wait until calibration completes
+
+        // Longest available sample time (640.5 ADC clock cycles) for both the
+        // shunt channel and VREFINT: accuracy matters far more here than speed,
+        // and the 1K filter resistor (R2) ahead of the shunt channel needs
+        // extra settling time to charge the ADC's internal sampling capacitor.
+        ADC1->SMPR1 |= ADC_SMPR1_SMP0 | ADC_SMPR1_SMP5;
+
+        ADC1->CR |= ADC_CR_ADEN;                  // Enable the ADC
+        while (!(ADC1->ISR & ADC_ISR_ADRDY)) {}   // Wait until it reports ready
+    }
+
+    // Runs one single-channel conversion and returns the raw 12-bit result.
+    uint16_t adc_read_channel(uint32_t channel) {
+        ADC1->SQR1 = (channel << ADC_SQR1_SQ1_Pos);  // 1-entry sequence: convert only 'channel'
+        ADC1->CR |= ADC_CR_ADSTART;                   // Start the conversion
+
+        while (!(ADC1->ISR & ADC_ISR_EOC)) {}         // Wait for "end of conversion"
+        return static_cast<uint16_t>(ADC1->DR);       // Reading DR also clears EOC
+    }
+
+    // Refreshes shunt_voltage/shunt_current/shunt_power from a fresh pair of
+    // ADC readings.
+    //
+    // VDDA (the analog supply) is not assumed to be exactly 3.3V: it is derived
+    // from the internal reference channel against its factory calibration
+    // value, which is far more accurate than trusting the nominal supply
+    // voltage. Since this board's own 3.3V rail (VDDA) is the same rail the
+    // shunt monitors (see T1/V_In on the schematic), that calibrated VDDA
+    // doubles as the measured bus voltage ("U").
+    void update_measurements() {
+        const uint16_t vrefint_raw = adc_read_channel(ADC_CH0_VREFINT);
+        const float vdda = VREFINT_CAL_VDDA *
+            (static_cast<float>(*VREF_INT_CAL_ADDR) / static_cast<float>(vrefint_raw));
+
+        const uint16_t shunt_raw = adc_read_channel(ADC1_CHANNEL);
+        const float shunt_adc_voltage = (static_cast<float>(shunt_raw) / ADC_FULL_SCALE) * vdda;
+
+        // The INA199 output is the shunt's own voltage drop multiplied by its
+        // fixed gain; dividing it back out recovers the drop, and Ohm's law
+        // then turns that into the current flowing through the shunt.
+        const float shunt_drop_voltage = shunt_adc_voltage / INA199_GAIN;
+
+        shunt_voltage = vdda;
+        shunt_current = shunt_drop_voltage / SHUNT_RESISTOR;
+        shunt_power   = shunt_voltage * shunt_current;
+    }
 
     // -------------------------------- PROTOCOL HELPERS --------------------------------
 
@@ -182,11 +263,13 @@ namespace {
             send_frame(RESP_PONG);
 
         } else if (strcmp(payload, CMD_GET_DATA) == 0) {
+            update_measurements();   // Take a fresh reading right before replying
+
             char data_payload[MSG_BUFFER_SIZE];
-            snprintf(data_payload, sizeof(data_payload), "I:%.1f,U:%.1f,W:%.1f",
-                      static_cast<double>(shunt_current),
-                      static_cast<double>(shunt_voltage),
-                      static_cast<double>(shunt_power));
+                        snprintf(data_payload, sizeof(data_payload), "I:%.4f mA,U:%.4f mV,W:%.4f mW",
+                      static_cast<double>(shunt_current * 1000.0f),
+                      static_cast<double>(shunt_voltage * 1000.0f),
+                      static_cast<double>(shunt_power * 1000.0f));
             send_frame(data_payload);
         }
     }
@@ -286,6 +369,8 @@ void wait_free_bus(){while (!(USART1->ISR & USART_ISR_TC)) {}}
 // handed off to process_frame() for validation and dispatch. rx_index is then reset, ready to
 // accumulate the next frame.
 int main() {
+
+    adc_init();
 
     char c;
     while (true)

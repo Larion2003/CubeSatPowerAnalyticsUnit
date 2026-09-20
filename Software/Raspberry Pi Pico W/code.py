@@ -57,7 +57,10 @@ def send_command(payload):
 def extract_payload(line):
     if not line:
         return None
-    text = line.decode().strip()
+    try:
+        text = line.decode().strip()
+    except UnicodeError:
+        return None   # A shared bus occasionally picks up noise; skip this line
     if len(text) < 5 or text[0] != "#":
         return None
     percent_index = text.find("%")

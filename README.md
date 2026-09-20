@@ -13,7 +13,10 @@ Since the satellite is equipped with **solar panels** for battery charging, the 
 - [x] **Manufacturing & Assembly:** The custom PCB has been fully manufactured, and all SMD and through-hole components (including critical high-precision IC packages) have been successfully soldered and assembled.
 - [x] **Firmware Communication Loop:** Successfully established a low-level, non-blocking hardware communication interface between the STM32 MCU and a Raspberry Pi Pico W using UART with inverted polarity.
 - [x] **Ping-Pong Verification:** Confirmed working end-to-end UART communication on the shared single-wire bus — the STM32 now reliably replies `pong\n` to every `ping\n` sent by the Raspberry Pi Pico W, verifying the physical link between the two microcontrollers.
-- [ ] **Shunt Resistor Calibration:** The hardware is nearly complete; the final step involves performing a highly accurate **4-point (Kelvin) measurement** to calibrate the exact resistance value of the shunt resistor.
+- [x] **Shunt Resistor Calibration:** Performed a 4-point (Kelvin) measurement to precisely determine the shunt resistor's true value (50 mΩ).
+- [x] **TiSAT Protocol Implementation:** Replaced the raw ping-pong test with the full, checksum-validated TiSAT frame protocol (`$`/`#` direction, 3-character module ID, payload, checksum, terminator), matching the shared master-side specification used across the TiSAT project's other modules.
+- [x] **ADC-Based Power Measurement:** Implemented calibrated ADC sampling of the shunt voltage — using the internal VREFINT reference to compensate for real VDDA deviation — converting the INA199 current-sense amplifier output into live current, voltage and power readings, delivered over the `GETDATA` command.
+- [ ] **End-to-End Master Integration:** Validate live communication between this module and the actual TiSAT master OBC (currently verified against a Raspberry Pi Pico W test harness simulating the master).
 
 ## Technical Roadmap & Development 
 The software architecture focuses on the low-level firmware development for the onboard microcontroller and the receiving subsystem: 
