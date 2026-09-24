@@ -5,11 +5,6 @@
 #include <cstdio>
 #include <cstring>
 
-char uart_getc();
-void uart_putc(char c);
-void uart_puts(const char* str);
-void wait_free_bus();
-
 // ==================================================================================================
 // PWR MODULE — TiSAT-compatible slave communication protocol
 // ==================================================================================================
@@ -27,13 +22,44 @@ void wait_free_bus();
 //   "GETDATA" -> "I:..,U:..,W:.."        : current, voltage and power readout
 // ==================================================================================================
 
+// Blocks until a byte has been fully received (RXNE flag set), then reads
+// and returns it. Reading RDR also clears the RXNE flag.
+char uart_getc()
+{
+    while (!(USART1->ISR & USART_ISR_RXNE)) {}
+    return USART1->RDR;
+}
+
+// Blocks until the transmit data register is empty (TXE flag set), then
+// loads the next byte into TDR to start shifting it out on the line.
+void uart_putc(char c)
+{
+    while (!(USART1->ISR & USART_ISR_TXE)) {}
+
+    USART1->TDR = static_cast<uint8_t>(c);
+}
+
+// Sends a null-terminated string one byte at a time via uart_putc(),
+// stopping at the terminating '\0'.
+void uart_puts(const char* str)
+{
+    while (*str) {
+        uart_putc(*str++);
+    }
+}
+
+// Blocks until the last byte has been fully shifted out onto the line
+// (TC flag set), meaning transmission is physically complete — not just
+// that TDR is empty (TXE), but that the stop bit has also left the pin.
+void wait_free_bus(){while (!(USART1->ISR & USART_ISR_TC)) {}}
+
 namespace {
 
     // -------------------------------- CONSTANTS --------------------------------
 
     constexpr const size_t   ADC1_CHANNEL     = 5;          // PA0 current shunt input channel
     constexpr const uint32_t ADC_CH0_VREFINT  = 0;          // Internal reference voltage channel
-    constexpr const float    SHUNT_RESISTOR   = 0.05f;      // 50 mOhm shunt resistance, 4-point measured
+    constexpr const float    SHUNT_RESISTOR   = 0.0522865f; // 52.2865 mOhm shunt resistance, 4-point measured
     constexpr const float    INA199_GAIN      = 50.0f;      // INA199A1 current-sense amplifier gain (V/V)
     constexpr const float    ADC_FULL_SCALE   = 4095.0f;    // 12-bit ADC: max raw reading (2^12 - 1)
     constexpr const float    VREFINT_CAL_VDDA = 3.0f;       // VDDA at which VREFINT_CAL was factory-measured
@@ -266,7 +292,7 @@ namespace {
             update_measurements();   // Take a fresh reading right before replying
 
             char data_payload[MSG_BUFFER_SIZE];
-                        snprintf(data_payload, sizeof(data_payload), "I:%.4f mA,U:%.4f mV,W:%.4f mW",
+            snprintf(data_payload, sizeof(data_payload), "I:%.4f mA,U:%.4f mV,W:%.4f mW",
                       static_cast<double>(shunt_current * 1000.0f),
                       static_cast<double>(shunt_voltage * 1000.0f),
                       static_cast<double>(shunt_power * 1000.0f));
@@ -329,37 +355,6 @@ extern "C" void SystemInit() {
     // peripheral itself (UE). Without UE, none of the above settings take effect.
     USART1->CR1 |= USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
 }
-
-// Blocks until a byte has been fully received (RXNE flag set), then reads
-// and returns it. Reading RDR also clears the RXNE flag.
-char uart_getc()
-{
-    while (!(USART1->ISR & USART_ISR_RXNE)) {}
-    return USART1->RDR;
-}
-
-// Blocks until the transmit data register is empty (TXE flag set), then
-// loads the next byte into TDR to start shifting it out on the line.
-void uart_putc(char c)
-{
-    while (!(USART1->ISR & USART_ISR_TXE)) {}
-
-    USART1->TDR = static_cast<uint8_t>(c);
-}
-
-// Sends a null-terminated string one byte at a time via uart_putc(),
-// stopping at the terminating '\0'.
-void uart_puts(const char* str)
-{
-    while (*str) {
-        uart_putc(*str++);
-    }
-}
-
-// Blocks until the last byte has been fully shifted out onto the line
-// (TC flag set), meaning transmission is physically complete — not just
-// that TDR is empty (TXE), but that the stop bit has also left the pin.
-void wait_free_bus(){while (!(USART1->ISR & USART_ISR_TC)) {}}
 
 // ==================================================================================================
 // Main Execution Loop

@@ -1,14 +1,15 @@
-# TiSAT protocol test master for the Raspberry Pi Pico W.
-#
-# Periodically sends "ping" and "GETDATA" commands to the PWR module running
-# on the STM32L431KC over a shared single-wire UART bus, and prints both the
-# sent command and the module's reply.
+# Test master for the PWR module: sends ping/GETDATA over the shared
+# single-wire UART bus and logs both sides of the conversation.
 
 import board
 import busio
+import digitalio
 import time
 
 uart = busio.UART(board.GP0, board.GP1, baudrate=9600)
+
+led = digitalio.DigitalInOut(board.LED)
+led.direction = digitalio.Direction.OUTPUT
 
 MODULE = "PWR"
 
@@ -16,22 +17,19 @@ MASTER_LABEL = "Raspberry Pi Pico W (Master)"
 SLAVE_LABEL  = "STM32L431KC - PWR module (Slave)"
 LABEL_WIDTH  = max(len(MASTER_LABEL), len(SLAVE_LABEL))
 
-# Prints one log line with the arrow aligned to the same column, regardless
-# of how long the source label ("Master" vs "Slave") is.
+# Lines up the arrow in the same column no matter how long the label is.
 def log(label, message):
     print(f"{label:<{LABEL_WIDTH}} -> {message}")
 
-# Computes the TiSAT protocol checksum: the 8-bit sum (wrapping at 256) of
-# every character in 'body', which already includes the trailing '%'.
-# Must match calc_checksum() on the STM32 side exactly.
+# Same checksum rule as the STM32 side: sum of 'body' (already has the
+# trailing '%'), wrapping at 256.
 def calc_checksum(body):
     checksum = 0
     for ch in body:
         checksum = (checksum + ord(ch)) & 0xFF
     return checksum
 
-# Builds one full TiSAT frame addressed to MODULE: "$" + module + payload +
-# "%" + 2 hex checksum digits + "\r\n".
+# "$" + module + payload + "%" + 2 hex checksum digits + "\r\n"
 def build_frame(payload):
     body = "$" + MODULE + payload + "%"
     checksum = calc_checksum(body)
@@ -44,23 +42,21 @@ def send_command(payload):
     frame = build_frame(payload)
     uart.write(frame.encode("ascii"))
 
-    # The shared single-wire bus reflects every transmitted byte back onto our
-    # own RX, so the first line read back is always our own echoed command.
+    # We hear our own bytes back on this shared bus, so the first line is our own echo.
     echo = uart.readline()
 
-    # The slave's real reply follows as the next complete line.
+    # The slave's real reply follows next.
     reply = uart.readline()
     return reply
 
-# Extracts the payload from a "#PWR...%.." reply line, or None if the line
-# is missing, empty, or not a well-formed reply.
+# Pulls the payload out of a "#PWR...%.." reply, or None if it's missing/malformed.
 def extract_payload(line):
     if not line:
         return None
     try:
         text = line.decode().strip()
     except UnicodeError:
-        return None   # A shared bus occasionally picks up noise; skip this line
+        return None   # bus noise, skip this line
     if len(text) < 5 or text[0] != "#":
         return None
     percent_index = text.find("%")
@@ -68,12 +64,14 @@ def extract_payload(line):
         return None
     return text[4:percent_index]
 
-# Alternates between a liveness check and a telemetry request, once per second.
+# Alternates ping/GETDATA once a second, blinking the onboard LED as a heartbeat.
 while True:
     reply = send_command("ping")
     log(SLAVE_LABEL, extract_payload(reply))
+    led.value = not led.value
     time.sleep(0.5)
 
     reply = send_command("GETDATA")
     log(SLAVE_LABEL, extract_payload(reply))
+    led.value = not led.value
     time.sleep(0.5)
