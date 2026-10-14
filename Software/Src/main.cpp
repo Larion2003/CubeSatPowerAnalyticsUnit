@@ -328,12 +328,9 @@ namespace {
             return;   // Corrupted frame
         }
 
-        const bool for_us = (buf[1] == MODULE_ID[0]) &&
-                            (buf[2] == MODULE_ID[1]) &&
-                            (buf[3] == MODULE_ID[2]);
-        if (!for_us) {
-            return;   // Addressed to a different module
-        }
+        if (!(buf[1] == MODULE_ID[0] && buf[2] == MODULE_ID[1] && buf[3] == MODULE_ID[2])) {
+			return;   // Addressed to a different module
+		}
 
         // Copy the payload (between the module ID and the '%') into a terminated string.
         char payload[MSG_BUFFER_SIZE];
