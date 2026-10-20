@@ -18,15 +18,12 @@ Since the satellite is equipped with **solar panels** for battery charging, the 
 - [x] **ADC-Based Power Measurement:** Implemented calibrated ADC sampling of the shunt voltage — using the internal VREFINT reference to compensate for real VDDA deviation and 64x oversampling to suppress noise — converting the INA199 current-sense amplifier output into live current, voltage and power readings, delivered over the `GETDATA` command.
 - [x] **Current Calibration & Verification:** Calibrated the current measurement against known reference currents with a straight-line (linear regression) correction, and added a no-load threshold so an unloaded module reports exactly `0`. Verified on 38 reference points between 1 mA and 200 mA: the worst absolute error is 0.194 mA (about 0.1 % of the 200 mA range), the relative error is below 0.3 % from 50 mA up and reaches 8.7 % only at 1 mA, where one ADC step (about 0.31 mA) limits the resolution.
 
-## Technical Roadmap & Development 
-The software architecture focuses on the low-level firmware development for the onboard microcontroller and the receiving subsystem: 
-1. **Custom HAL (Hardware Abstraction Layer):** Bare-metal foundational drivers written from scratch in **C++** to manage the MCU peripherals (RCC, GPIO, ADC, USART), without any vendor HAL or RTOS. *(done)*
-2. **Request-Response Communication:** The STM32 acts as a Slave: it waits for a command frame from the Master (`ping`, `GETDATA`) and answers it over the shared open-drain bus. Reception and transmission use polling in the main loop. *(done)*
-3. **Subsystem Master (Test):** A CircuitPython-based test master on the Raspberry Pi Pico W periodically sends `ping` and `GETDATA` frames, prints the replies, and toggles a diagnostic heartbeat LED. *(done)*
-4. **Interrupt-Driven Operation:** Replacing the polling loop with interrupt-driven USART handling, so the CPU is free between requests. *(planned)*
-5. **Low-Power Operation:** Using the low-power modes of the STM32L4 between measurements to reduce the unit's own consumption. *(planned)*
-6. **Frame Verification on the Master Side:** The Pico test master does not yet verify the checksum of the replies. *(planned)*
-7. **Analytics & Logging:** Developing the final data processing logic to log and analyze historical sensor power consumption. *(planned)*
+## Software Architecture & Development 
+The software side consists of the low-level firmware of the onboard microcontroller and a test master for the receiving subsystem: 
+1. **Custom HAL (Hardware Abstraction Layer):** Bare-metal foundational drivers written from scratch in **C++** to manage the MCU peripherals (RCC, GPIO, ADC, USART), without any vendor HAL or RTOS. 
+2. **Request-Response Communication:** The STM32 acts as a Slave: it waits for a command frame from the Master (`ping`, `GETDATA`) and answers it over the shared open-drain bus. Reception and transmission use polling in the main loop, which keeps the firmware simple and its timing predictable. 
+3. **Calibrated Measurement Pipeline:** Every `GETDATA` request is answered with fresh, calibrated current, voltage and power values, based on the VREFINT-compensated, 64x oversampled ADC readings and the linear-regression current calibration. 
+4. **Subsystem Master (Test):** A CircuitPython-based test master on the Raspberry Pi Pico W periodically sends `ping` and `GETDATA` frames, prints the replies, and toggles a diagnostic heartbeat LED. 
  
 ## About the Author 
 This project is being developed as part of my **undergraduate thesis** at the **University of Szeged (SZTE)**, under the guidance of my supervisor.  
